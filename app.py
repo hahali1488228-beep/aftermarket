@@ -1,228 +1,612 @@
+
 import os
-import threading
-from flask import Flask
-import urllib.request
-import urllib.parse
 import json
 import time
 import random
+import threading
+import urllib.request
+import urllib.parse
+from flask import Flask
 
-# --- НАСТРОЙКИ ---
-TOKEN = os.environ.get('TELEGRAM_TOKEN', '9133073082:AAEMW6Uv6S2wvcEII7xlXmUNp4KdHsRqpRE')
+# =========================
+# CONFIG
+# =========================
+
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+ADMIN_CODE = os.environ.get("ADMIN_CODE", "76161")
+
+if not TOKEN:
+    raise RuntimeError("Добавь TELEGRAM_TOKEN в Environment!")
+
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
-ADMIN_CODE = "DD29KL"
 
 DB_USERS = "users.json"
-DB_NFTS = "nfts.json"
 DB_SETTINGS = "settings.json"
 
-CHESTS = [
-    {"id": "wood", "name": "🪵 Деревянный", "price": 50, "min": 10, "max": 80, "nft_chance": 0.05},
-    {"id": "iron", "name": "⛓️ Железный", "price": 150, "min": 50, "max": 200, "nft_chance": 0.10},
-    {"id": "gold", "name": "🪙 Золотой", "price": 400, "min": 150, "max": 600, "nft_chance": 0.20},
-    {"id": "diamond", "name": "💎 Алмазный", "price": 1000, "min": 500, "max": 1500, "nft_chance": 0.30},
-    {"id": "emerald", "name": "🟢 Изумрудный", "price": 2500, "min": 1000, "max": 4000, "nft_chance": 0.40},
-    {"id": "ruby", "name": "🔴 Рубиновый", "price": 5000, "min": 2000, "max": 8000, "nft_chance": 0.50},
-    {"id": "obsidian", "name": "🌑 Обсидиановый", "price": 10000, "min": 5000, "max": 15000, "nft_chance": 0.60},
-    {"id": "mythic", "name": "🦄 Мифический", "price": 25000, "min": 10000, "max": 40000, "nft_chance": 0.75},
-    {"id": "legend", "name": "👑 Легендарный", "price": 50000, "min": 20000, "max": 100000, "nft_chance": 0.85},
-    {"id": "god", "name": "🌌 Божественный", "price": 100000, "min": 50000, "max": 250000, "nft_chance": 0.99}
-]
+CHANNEL = "https://t.me/marketnft111"
+AUTHOR = "https://t.me/LYCIK002"
 
-NFT_NAMES = ["Кот", "Пёс", "Ракета", "Пицца", "Космос", "Алмаз", "Корона", "Меч", "Щит", "Звезда", "Планета", "Дракон", "Единорог", "Призрак", "Робот"]
-NFT_RARITY = ["Обычный", "Редкий", "Эпический", "Легендарный", "Мифический"]
+LANGUAGES = {
+    "ru": {
+        "welcome": "👋 Добро пожаловать!\n\n💰 Баланс: {balance} 🪙",
+        "support": "❤️ Поддержать авторов",
+        "games": "🎮 Игры",
+        "casino": "🎰 Казино",
+        "settings": "⚙️ Настройки",
+        "channel": "📢 Канал",
+        "profile": "👤 Профиль",
+        "back": "⬅️ Назад",
+        "choose_game": "🎮 Выбери игру:",
+        "choose_bet": "🪙 Выбери ставку:",
+        "balance": "💰 Баланс",
+        "language": "🌍 Выбери язык:",
+        "saved": "✅ Язык изменён!",
+        "admin": "👑 Админка",
+        "enter_code": "🔐 Введи секретный код:",
+        "wrong_code": "❌ Неверный код!",
+        "admin_ok": "👑 Админка открыта!",
+        "stats": "👥 Пользователей: {users}\n🪙 Всего монет: {coins}",
+        "no_money": "❌ Недостаточно монет!",
+        "win": "🎉 Победа! Ты получил {amount} монет!",
+        "lose": "😢 Проигрыш! Ты потерял {amount} монет.",
+        "profile_text": "👤 Твой профиль\n\n🆔 ID: {id}\n🪙 Баланс: {balance}\n🎮 Игр сыграно: {games}",
+        "roulette": "🔴 Рулетка",
+        "slots": "🎰 Слоты",
+        "dice": "🎲 Кубик",
+        "coin": "🪙 Монетка",
+        "number": "🔢 Угадай число",
+        "casino_info": "🎰 Игровое казино\n\nИспользуются только виртуальные монеты.",
+        "admin_panel": "👑 Панель администратора",
+        "cancel": "❌ Отмена"
+    },
 
-def load_data(file, default):
-    if os.path.exists(file):
-        try:
-            with open(file, "r", encoding="utf-8") as f: return json.load(f)
-        except: return default
-    return default
+    "uk": {
+        "welcome": "👋 Ласкаво просимо!\n\n💰 Баланс: {balance} 🪙",
+        "support": "❤️ Підтримати авторів",
+        "games": "🎮 Ігри",
+        "casino": "🎰 Казино",
+        "settings": "⚙️ Налаштування",
+        "channel": "📢 Канал",
+        "profile": "👤 Профіль",
+        "back": "⬅️ Назад",
+        "choose_game": "🎮 Обери гру:",
+        "choose_bet": "🪙 Обери ставку:",
+        "balance": "💰 Баланс",
+        "language": "🌍 Обери мову:",
+        "saved": "✅ Мову змінено!",
+        "admin": "👑 Адмінка",
+        "enter_code": "🔐 Введи секретний код:",
+        "wrong_code": "❌ Неправильний код!",
+        "admin_ok": "👑 Адмінку відкрито!",
+        "stats": "👥 Користувачів: {users}\n🪙 Усього монет: {coins}",
+        "no_money": "❌ Недостатньо монет!",
+        "win": "🎉 Перемога! Ти отримав {amount} монет!",
+        "lose": "😢 Поразка! Ти втратив {amount} монет.",
+        "profile_text": "👤 Твій профіль\n\n🆔 ID: {id}\n🪙 Баланс: {balance}\n🎮 Ігор зіграно: {games}",
+        "roulette": "🔴 Рулетка",
+        "slots": "🎰 Слоти",
+        "dice": "🎲 Кубик",
+        "coin": "🪙 Монетка",
+        "number": "🔢 Вгадай число",
+        "casino_info": "🎰 Ігрове казино\n\nВикористовуються лише віртуальні монети.",
+        "admin_panel": "👑 Панель адміністратора",
+        "cancel": "❌ Скасувати"
+    },
 
-def save_data(file, data):
-    with open(file, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=4)
+    "kk": {
+        "welcome": "👋 Қош келдің!\n\n💰 Баланс: {balance} 🪙",
+        "support": "❤️ Авторларды қолдау",
+        "games": "🎮 Ойындар",
+        "casino": "🎰 Казино",
+        "settings": "⚙️ Баптаулар",
+        "channel": "📢 Арна",
+        "profile": "👤 Профиль",
+        "back": "⬅️ Артқа",
+        "choose_game": "🎮 Ойынды таңда:",
+        "choose_bet": "🪙 Тігімді таңда:",
+        "balance": "💰 Баланс",
+        "language": "🌍 Тілді таңда:",
+        "saved": "✅ Тіл өзгертілді!",
+        "admin": "👑 Әкімші",
+        "enter_code": "🔐 Құпия кодты енгіз:",
+        "wrong_code": "❌ Қате код!",
+        "admin_ok": "👑 Әкімші бөлімі ашылды!",
+        "stats": "👥 Қолданушылар: {users}\n🪙 Барлық тиындар: {coins}",
+        "no_money": "❌ Тиын жеткіліксіз!",
+        "win": "🎉 Жеңіс! Сен {amount} тиын алдың!",
+        "lose": "😢 Жеңіліс! Сен {amount} тиын жоғалттың.",
+        "profile_text": "👤 Профиль\n\n🆔 ID: {id}\n🪙 Баланс: {balance}\n🎮 Ойындар: {games}",
+        "roulette": "🔴 Рулетка",
+        "slots": "🎰 Слоттар",
+        "dice": "🎲 Кубик",
+        "coin": "🪙 Тиын",
+        "number": "🔢 Сан тап",
+        "casino_info": "🎰 Ойын казиносы\n\nТек виртуалды тиындар қолданылады.",
+        "admin_panel": "👑 Әкімші панелі",
+        "cancel": "❌ Болдырмау"
+    },
+
+    "en": {
+        "welcome": "👋 Welcome!\n\n💰 Balance: {balance} 🪙",
+        "support": "❤️ Support authors",
+        "games": "🎮 Games",
+        "casino": "🎰 Casino",
+        "settings": "⚙️ Settings",
+        "channel": "📢 Channel",
+        "profile": "👤 Profile",
+        "back": "⬅️ Back",
+        "choose_game": "🎮 Choose a game:",
+        "choose_bet": "🪙 Choose your bet:",
+        "balance": "💰 Balance",
+        "language": "🌍 Choose language:",
+        "saved": "✅ Language changed!",
+        "admin": "👑 Admin panel",
+        "enter_code": "🔐 Enter secret code:",
+        "wrong_code": "❌ Wrong code!",
+        "admin_ok": "👑 Admin panel opened!",
+        "stats": "👥 Users: {users}\n🪙 Total coins: {coins}",
+        "no_money": "❌ Not enough coins!",
+        "win": "🎉 You won {amount} coins!",
+        "lose": "😢 You lost {amount} coins.",
+        "profile_text": "👤 Your profile\n\n🆔 ID: {id}\n🪙 Balance: {balance}\n🎮 Games played: {games}",
+        "roulette": "🔴 Roulette",
+        "slots": "🎰 Slots",
+        "dice": "🎲 Dice",
+        "coin": "🪙 Coin",
+        "number": "🔢 Guess the number",
+        "casino_info": "🎰 Game casino\n\nOnly virtual coins are used.",
+        "admin_panel": "👑 Administrator panel",
+        "cancel": "❌ Cancel"
+    }
+}
+
+GAME_IDS = ["roulette", "slots", "dice", "coin", "number"]
+GAME_NAMES = {
+    "roulette": "🔴",
+    "slots": "🎰",
+    "dice": "🎲",
+    "coin": "🪙",
+    "number": "🔢"
+}
+
+# =========================
+# DATABASE
+# =========================
+
+def load_data(filename, default):
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return default
+
+def save_data(filename, data):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
 users = load_data(DB_USERS, {})
-nfts = load_data(DB_NFTS, [])
-settings = load_data(DB_SETTINGS, {"banned": []})
-
-def api_request(method, params=None):
-    url = API_URL + method
-    data = urllib.parse.urlencode(params).encode('utf-8') if params else None
-    req = urllib.request.Request(url, data=data)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r: return json.loads(r.read().decode('utf-8'))
-    except Exception as e: return None
-
-def send_msg(cid, text, markup=None):
-    p = {'chat_id': cid, 'text': text, 'parse_mode': 'Markdown'}
-    if markup: p['reply_markup'] = json.dumps(markup)
-    api_request('sendMessage', p)
-
-def edit_msg(cid, mid, text, markup=None):
-    p = {'chat_id': cid, 'message_id': mid, 'text': text, 'parse_mode': 'Markdown'}
-    if markup: p['reply_markup'] = json.dumps(markup)
-    api_request('editMessageText', p)
-
-def ans_cb(cid, text=None):
-    p = {'callback_query_id': cid}
-    if text: p['text'] = text; p['show_alert'] = True
-    api_request('answerCallbackQuery', p)
+settings = load_data(DB_SETTINGS, {})
+states = {}
 
 def get_user(uid):
     uid = str(uid)
+
     if uid not in users:
-        users[uid] = {"balance": 500, "inv": [], "is_admin": False}
+        users[uid] = {
+            "balance": 500,
+            "language": "ru",
+            "games": 0,
+            "admin": False
+        }
         save_data(DB_USERS, users)
+
     return users[uid]
 
+def tr(uid, key):
+    user = get_user(uid)
+    lang = user.get("language", "ru")
+    return LANGUAGES.get(lang, LANGUAGES["ru"])[key]
+
+# =========================
+# TELEGRAM API
+# =========================
+
+def api(method, params=None):
+    try:
+        data = urllib.parse.urlencode(params or {}).encode()
+        req = urllib.request.Request(API_URL + method, data=data)
+
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode())
+    except Exception as e:
+        print("API error:", e)
+        return None
+
+def send(chat, message, keyboard=None):
+    params = {
+        "chat_id": chat,
+        "text": message
+    }
+
+    if keyboard:
+        params["reply_markup"] = json.dumps(keyboard)
+
+    api("sendMessage", params)
+
+def edit(chat, mid, message, keyboard=None):
+    params = {
+        "chat_id": chat,
+        "message_id": mid,
+        "text": message
+    }
+
+    if keyboard:
+        params["reply_markup"] = json.dumps(keyboard)
+
+    api("editMessageText", params)
+
+def answer(cid, message=None):
+    params = {"callback_query_id": cid}
+    if message:
+        params["text"] = message
+        params["show_alert"] = True
+    api("answerCallbackQuery", params)
+
+# =========================
+# MENUS
+# =========================
+
 def main_menu(uid):
-    kb = [
-        [{"text": "🏪 Маркет", "callback_data": "market"}, {"text": "👤 Профиль", "callback_data": "profile"}],
-        [{"text": "🎰 Казино", "callback_data": "casino"}, {"text": "🎁 Сундуки", "callback_data": "chests"}],
-        [{"text": "📢 Канал", "url": "https://t.me/marketnft111"}]
-    ]
-    if users.get(str(uid), {}).get("is_admin"): kb.append([{"text": "👑 Админка", "callback_data": "admin_panel"}])
-    return {"inline_keyboard": kb}
+    return {
+        "inline_keyboard": [
+            [{"text": tr(uid, "support"), "url": AUTHOR}],
+            [
+                {"text": tr(uid, "games"), "callback_data": "games"},
+                {"text": tr(uid, "casino"), "callback_data": "casino"}
+            ],
+            [
+                {"text": tr(uid, "settings"), "callback_data": "settings"},
+                {"text": tr(uid, "profile"), "callback_data": "profile"}
+            ],
+            [{"text": tr(uid, "channel"), "url": CHANNEL}]
+        ]
+    }
 
-def casino_menu():
-    return {"inline_keyboard": [
-        [{"text": "🔴 Рулетка", "callback_data": "g_roulette"}],
-        [{"text": "🍒 Слоты", "callback_data": "g_slots"}],
-        [{"text": "🎲 Кубик", "callback_data": "g_dice"}],
-        [{"text": "🪙 Монетка", "callback_data": "g_coin"}],
-        [{"text": "« Назад", "callback_data": "back_home"}]
-    ]}
-
-def chests_menu():
+def games_menu(uid):
     kb = []
-    for c in CHESTS:
-        kb.append([{"text": f"{c['name']} - {c['price']} 🪙", "callback_data": f"buy_{c['id']}"}])
-    kb.append([{"text": "« Назад", "callback_data": "back_home"}])
+
+    for game in GAME_IDS:
+        kb.append([{
+            "text": GAME_NAMES[game] + " " + tr(uid, game),
+            "callback_data": "game_" + game
+        }])
+
+    kb.append([{
+        "text": tr(uid, "back"),
+        "callback_data": "home"
+    }])
+
     return {"inline_keyboard": kb}
+
+def settings_menu(uid):
+    return {
+        "inline_keyboard": [
+            [{"text": "🌍 Language / Мова / Тіл", "callback_data": "languages"}],
+            [{"text": tr(uid, "admin"), "callback_data": "admin_login"}],
+            [{"text": tr(uid, "back"), "callback_data": "home"}]
+        ]
+    }
+
+def language_menu():
+    return {
+        "inline_keyboard": [
+            [{"text": "🇺🇦 Українська", "callback_data": "lang_uk"}],
+            [{"text": "🇷🇺 Русский", "callback_data": "lang_ru"}],
+            [{"text": "🇰🇿 Қазақша", "callback_data": "lang_kk"}],
+            [{"text": "🇬🇧 English", "callback_data": "lang_en"}],
+            [{"text": "⬅️", "callback_data": "settings"}]
+        ]
+    }
+
+def bet_menu(game):
+    return {
+        "inline_keyboard": [
+            [{"text": f"{n} 🪙", "callback_data": f"bet_{game}_{n}"}]
+            for n in [10, 25, 50, 100]
+        ] + [[{"text": "⬅️", "callback_data": "games"}]]
+    }
+
+# =========================
+# GAMES
+# =========================
+
+def play_game(game, bet):
+    if game == "coin":
+        result = random.choice(["heads", "tails"])
+        win = result == "heads"
+        return win, "🪙 Выпало: " + ("Орёл" if result == "heads" else "Решка")
+
+    if game == "dice":
+        player = random.randint(1, 6)
+        bot = random.randint(1, 6)
+        return player > bot, f"🎲 Ты: {player}\n🤖 Бот: {bot}"
+
+    if game == "roulette":
+        number = random.randint(0, 36)
+        win = number in [7, 14, 21, 28]
+        return win, f"🔴 Выпало число: {number}"
+
+    if game == "slots":
+        symbols = ["🍒", "🍋", "🍉", "⭐", "💎"]
+        result = [random.choice(symbols) for _ in range(3)]
+        win = len(set(result)) == 1
+        return win, "🎰 " + " | ".join(result)
+
+    if game == "number":
+        secret = random.randint(1, 5)
+        guess = random.randint(1, 5)
+        return secret == guess, f"🔢 Загадано: {secret}\nТвой результат: {guess}"
+
+    return False, ""
+
+def play(uid, game, bet):
+    user = get_user(uid)
+
+    if bet <= 0 or user["balance"] < bet:
+        return "no_money"
+
+    win, result = play_game(game, bet)
+
+    user["games"] += 1
+
+    if win:
+        # Net profit: + bet
+        user["balance"] += bet
+        message = tr(uid, "win").format(amount=bet)
+    else:
+        user["balance"] -= bet
+        message = tr(uid, "lose").format(amount=bet)
+
+    save_data(DB_USERS, users)
+
+    return (
+        result + "\n\n" + message +
+        f"\n\n💰 Баланс: {user['balance']} 🪙"
+    )
+
+# =========================
+# BOT
+# =========================
 
 def run_bot():
-    print("🚀 Казино-Маркет запущен!")
-    last_id = 0
+    print("BOT STARTED")
+    offset = 0
+
     while True:
         try:
-            upd = api_request('getUpdates', {'offset': last_id + 1, 'timeout': 10})
-            if upd and upd.get('ok'):
-                for u in upd['result']:
-                    last_id = u['update_id']
-                    
-                    if 'message' in u:
-                        m = u['message']; cid = m['chat']['id']; uid = m['from']['id']; txt = m.get('text', '')
-                        username = m['from'].get('username', 'без_юзернейма')
-                        user = get_user(uid)
-                        
-                        if str(uid) in settings["banned"]: send_msg(cid, "⛔ Вы забанены."); continue
-                        
-                        if txt == '/start':
-                            send_msg(cid, f"👋 Привет, @{username}!\n\nТвой баланс: *{user['balance']} 🪙*\nВыбирай, чем займемся?", main_menu(uid))
-                        elif txt == ADMIN_CODE:
-                            users[str(uid)]["is_admin"] = True; save_data(DB_USERS, users)
-                            send_msg(cid, "👑 Админка открыта!", main_menu(uid))
-                        
-                    elif 'callback_query' in u:
-                        c = u['callback_query']; cid = c['message']['chat']['id']; mid = c['message']['message_id']; uid = c['from']['id']; d = c['data']
-                        user = get_user(uid)
-                        
-                        if d == "back_home": ans_cb(c['id']); edit_msg(cid, mid, "🏠 Главное меню", main_menu(uid))
-                        
-                        elif d == "profile":
-                            ans_cb(c['id'])
-                            txt = f"👤 **Профиль**\n\n🆔 ID: `{uid}`\n💰 Баланс: *{user['balance']} 🪙*\n📦 Инвентарь: {len(user.get('inv', []))} NFT\n\n"
-                            if user.get('inv'):
-                                txt += "**Твои NFT:**\n"
-                                for nft in user['inv'][:5]: # Показываем первые 5
-                                    txt += f"• {nft['name']} ({nft['rarity']})\n"
-                            edit_msg(cid, mid, txt, main_menu(uid))
-                        
-                        elif d == "casino": ans_cb(c['id']); edit_msg(cid, mid, "🎰 **Казино**", casino_menu())
-                        elif d == "chests": ans_cb(c['id']); edit_msg(cid, mid, "🎁 **Сундуки**", chests_menu())
-                        
-                        # --- ИГРЫ ---
-                        elif d.startswith("g_"):
-                            game = d.split("_")[1]
-                            bet = 100
-                            if user['balance'] < bet:
-                                ans_cb(c['id'], "❌ Нужно 100 монет!", True); continue
-                            
-                            win = random.choice([True, False])
-                            if win:
-                                users[str(uid)]['balance'] += bet
-                                txt = f"🎉 Победа! Выиграл {bet} 🪙"
-                            else:
-                                users[str(uid)]['balance'] -= bet
-                                txt = f"😢 Проигрыш... Потерял {bet} 🪙"
-                            
+            result = api("getUpdates", {
+                "offset": offset + 1,
+                "timeout": 20
+            })
+
+            if not result or not result.get("ok"):
+                time.sleep(2)
+                continue
+
+            for update in result["result"]:
+                offset = update["update_id"]
+
+                # MESSAGES
+                if "message" in update:
+                    m = update["message"]
+                    uid = str(m["from"]["id"])
+                    chat = m["chat"]["id"]
+                    txt = m.get("text", "")
+                    user = get_user(uid)
+
+                    if txt == "/start":
+                        states.pop(uid, None)
+                        send(
+                            chat,
+                            tr(uid, "welcome").format(
+                                balance=user["balance"]
+                            ),
+                            main_menu(uid)
+                        )
+                        continue
+
+                    state = states.get(uid)
+
+                    if state == "admin_code":
+                        states.pop(uid, None)
+
+                        if txt == ADMIN_CODE:
+                            user["admin"] = True
                             save_data(DB_USERS, users)
-                            ans_cb(c['id'], "Игра окончена!", True)
-                            edit_msg(cid, mid, txt, casino_menu())
-                            
-                        # --- СУНДУКИ ---
-                        elif d.startswith("buy_"):
-                            chest_id = d.replace("buy_", "")
-                            chest = next((ch for ch in CHESTS if ch['id'] == chest_id), None)
-                            if not chest: continue
-                            
-                            if user['balance'] < chest['price']:
-                                ans_cb(c['id'], "❌ Недостаточно монет!", True); continue
-                            
-                            users[str(uid)]['balance'] -= chest['price']
+
+                            total_coins = sum(
+                                x.get("balance", 0)
+                                for x in users.values()
+                            )
+
+                            send(
+                                chat,
+                                tr(uid, "admin_ok") + "\n\n" +
+                                tr(uid, "stats").format(
+                                    users=len(users),
+                                    coins=total_coins
+                                ),
+                                settings_menu(uid)
+                            )
+                        else:
+                            send(chat, tr(uid, "wrong_code"),
+                                 settings_menu(uid))
+                        continue
+
+                    if txt == "/menu":
+                        send(chat, "🏠 Menu", main_menu(uid))
+
+                # BUTTONS
+                if "callback_query" in update:
+                    c = update["callback_query"]
+                    uid = str(c["from"]["id"])
+                    chat = c["message"]["chat"]["id"]
+                    mid = c["message"]["message_id"]
+                    d = c["data"]
+
+                    user = get_user(uid)
+
+                    if d == "home":
+                        answer(c["id"])
+                        edit(
+                            chat, mid,
+                            tr(uid, "welcome").format(
+                                balance=user["balance"]
+                            ),
+                            main_menu(uid)
+                        )
+
+                    elif d == "games" or d == "casino":
+                        answer(c["id"])
+                        edit(chat, mid, tr(uid, "choose_game"),
+                             games_menu(uid))
+
+                    elif d == "settings":
+                        answer(c["id"])
+                        edit(chat, mid, tr(uid, "settings"),
+                             settings_menu(uid))
+
+                    elif d == "languages":
+                        answer(c["id"])
+                        edit(chat, mid, tr(uid, "language"),
+                             language_menu())
+
+                    elif d.startswith("lang_"):
+                        lang = d.replace("lang_", "")
+
+                        if lang in LANGUAGES:
+                            user["language"] = lang
                             save_data(DB_USERS, users)
-                            
-                            if random.random() < chest['nft_chance']:
-                                nft_name = random.choice(NFT_NAMES)
-                                nft_rarity = random.choice(NFT_RARITY)
-                                nft_price = random.randint(chest['price']*2, chest['price']*5)
-                                
-                                new_nft = {"id": len(nfts)+1, "owner": uid, "name": nft_name, "rarity": nft_rarity, "price": nft_price}
-                                nfts.append(new_nft)
-                                save_data(DB_NFTS, nfts)
-                                
-                                if 'inv' not in users[str(uid)]: users[str(uid)]['inv'] = []
-                                users[str(uid)]['inv'].append(new_nft)
-                                save_data(DB_USERS, users)
-                                
-                                txt = f"🎉 **ДЖЕКПОТ!**\n\nТы выбил NFT:\n✨ **{nft_name}** ({nft_rarity})\n💰 Цена: {nft_price} 🪙"
-                            else:
-                                coins = random.randint(chest['min'], chest['max'])
-                                users[str(uid)]['balance'] += coins
-                                save_data(DB_USERS, users)
-                                txt = f"📦 Ты открыл **{chest['name']}**...\n\nВнутри: +{coins} 🪙"
-                            
-                            ans_cb(c['id'], "Сундук открыт!", True)
-                            edit_msg(cid, mid, txt, main_menu(uid))
-                            
-                        elif d == "admin_panel":
-                            if not users[str(uid)].get("is_admin"): continue
-                            kb = {"inline_keyboard": [[{"text": "🚫 Бан", "callback_data": "admin_ban"}, {"text": "🗑️ Удалить лот", "callback_data": "admin_del"}], [{"text": "Назад", "callback_data": "back_home"}]]}
-                            edit_msg(cid, mid, "👑 **Админка**", kb)
-                            
-                        elif d == "admin_ban":
-                            if not users[str(uid)].get("is_admin"): continue
-                            user_states[uid] = {"step": "wait_ban"}
-                            edit_msg(cid, mid, "Введи ID для бана:")
-                            
-                        elif d == "admin_del":
-                            if not users[str(uid)].get("is_admin"): continue
-                            user_states[uid] = {"step": "wait_del"}
-                            edit_msg(cid, mid, "Введи ID лота для удаления:")
+
+                        answer(c["id"], tr(uid, "saved"))
+                        edit(
+                            chat, mid,
+                            tr(uid, "welcome").format(
+                                balance=user["balance"]
+                            ),
+                            main_menu(uid)
+                        )
+
+                    elif d == "profile":
+                        answer(c["id"])
+                        text = tr(uid, "profile_text").format(
+                            id=uid,
+                            balance=user["balance"],
+                            games=user["games"]
+                        )
+                        edit(chat, mid, text, main_menu(uid))
+
+                    elif d.startswith("game_"):
+                        game = d.replace("game_", "")
+
+                        if game in GAME_IDS:
+                            answer(c["id"])
+                            edit(chat, mid, tr(uid, "choose_bet"),
+                                 bet_menu(game))
+
+                    elif d.startswith("bet_"):
+                        parts = d.split("_")
+
+                        if len(parts) != 3:
+                            continue
+
+                        game = parts[1]
+                        bet = int(parts[2])
+
+                        if game not in GAME_IDS:
+                            continue
+
+                        if user["balance"] < bet:
+                            answer(c["id"], tr(uid, "no_money"))
+                            continue
+
+                        answer(c["id"])
+                        result_text = play(uid, game, bet)
+
+                        edit(
+                            chat, mid,
+                            result_text,
+                            games_menu(uid)
+                        )
+
+                    elif d == "admin_login":
+                        answer(c["id"])
+                        states[uid] = "admin_code"
+                        edit(chat, mid, tr(uid, "enter_code"))
+
+                    elif d == "admin_stats":
+                        answer(c["id"])
+
+                        if not user.get("admin"):
+                            continue
+
+                        coins = sum(
+                            x.get("balance", 0)
+                            for x in users.values()
+                        )
+
+                        edit(
+                            chat, mid,
+                            tr(uid, "stats").format(
+                                users=len(users),
+                                coins=coins
+                            ),
+                            settings_menu(uid)
+                        )
 
         except Exception as e:
-            print(f"Loop Error: {e}")
+            print("BOT ERROR:", e)
+            time.sleep(3)
 
-# --- FLASK ---
+
+# =========================
+# FLASK / RENDER
+# =========================
+
 app = Flask(__name__)
 
-@app.route('/')
-@app.route('/health')
+@app.route("/")
+@app.route("/health")
 def health():
-    return "Bot is running", 200
+    return "Bot is running!", 200
 
-if __name__ == '__main__':
-    threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    threading.Thread(
+        target=run_bot,
+        daemon=True
+    ).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
+def settings_menu(uid):
+    kb = [
+        [{"text": "🌍 Язык", "callback_data": "languages"}]
+    ]
+
+    if get_user(uid).get("admin"):
+        kb.append([
+            {"text": "📊 Статистика",
+             "callback_data": "admin_stats"}
+        ])
+
+    kb.extend([
+        [{"text": tr(uid, "admin"),
+          "callback_data": "admin_login"}],
+        [{"text": tr(uid, "back"),
+          "callback_data": "home"}]
+    ])
+
+    return {"inline_keyboard": kb}
+    
