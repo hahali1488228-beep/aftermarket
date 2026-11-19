@@ -1,665 +1,908 @@
 
+# ============================================================
+#                 MEGA TELEGRAM BOT 2.0
+#        GAMES • NFT • MARKET • PROFILE • ADMIN
+# ============================================================
+
 import os
-import json
 import time
 import random
 import sqlite3
 import threading
-import urllib.request
-import urllib.parse
-from flask import Flask
+import logging
+import html
 
-# ==================================================
-# NFT GAME BOT V2
-# ==================================================
+import telebot
+from telebot import types
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-ADMIN_CODE = os.environ.get("ADMIN_CODE", "76161")
-API = f"https://api.telegram.org/bot{TOKEN}/"
+# ================= CONFIG =================
 
-CHANNEL = "https://t.me/marketnft111"
-SUPPORT = "https://t.me/LYCIK002"
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_CODE = os.getenv("ADMIN_CODE")
 
-DB = "game.db"
-app = Flask(__name__)
+if not TOKEN or not ADMIN_CODE:
+    raise RuntimeError("Set TELEGRAM_TOKEN and ADMIN_CODE!")
 
-# ==================================================
-# DATABASE
-# ==================================================
+bot = telebot.TeleBot(TOKEN)
+DB_LOCK = threading.RLock()
 
-db = sqlite3.connect(DB, check_same_thread=False)
-db.row_factory = sqlite3.Row
-lock = threading.RLock()
+logging.basicConfig(level=logging.INFO)
 
-def init_db():
-    with lock:
-        db.executescript("""
-        CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY,
-            username TEXT,
-            coins INTEGER DEFAULT 500,
-            lang TEXT DEFAULT 'ru',
-            decoration TEXT DEFAULT '⭐',
-            is_admin INTEGER DEFAULT 0,
-            banned INTEGER DEFAULT 0
-        );
+# ================= DATABASE =================
 
-        CREATE TABLE IF NOT EXISTS inventory(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner INTEGER,
-            name TEXT,
-            rarity TEXT,
-            emoji TEXT,
-            price INTEGER
-        );
+db = sqlite3.connect(
+    "mega_bot.db",
+    check_same_thread=False
+)
 
-        CREATE TABLE IF NOT EXISTS listings(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nft_id INTEGER,
-            seller INTEGER,
-            price INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS stats(
-            user_id INTEGER PRIMARY KEY,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            games INTEGER DEFAULT 0
-        );
-        """)
-        db.commit()
-
-init_db()
-
-def query(sql, args=()):
-    with lock:
-        cur = db.execute(sql, args)
+def execute(query, params=()):
+    with DB_LOCK:
+        cur = db.execute(query, params)
         db.commit()
         return cur
 
-def get_user(uid, username=""):
-    uid = int(uid)
-    u = query("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    if not u:
-        query(
-            "INSERT INTO users(id,username) VALUES(?,?)",
-            (uid, username or "unknown")
-        )
-        query("INSERT INTO stats(user_id) VALUES(?)", (uid,))
-        u = query("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    elif username:
-        query("UPDATE users SET username=? WHERE id=?", (username, uid))
-        u = query("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    return u
+def init_db():
+    execute("""
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY,
+        username TEXT DEFAULT '',
+        balance INTEGER DEFAULT 500,
+        xp INTEGER DEFAULT 0,
+        level INTEGER DEFAULT 1,
+        language TEXT DEFAULT 'ru',
+        decoration TEXT DEFAULT '⭐',
+        admin INTEGER DEFAULT 0,
+        banned INTEGER DEFAULT 0,
+        daily TEXT DEFAULT ''
+    )
+    """)
 
-def coins(uid):
-    return get_user(uid)["coins"]
+    execute("""
+    CREATE TABLE IF NOT EXISTS inventory(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner INTEGER,
+        name TEXT,
+        rarity TEXT,
+        price INTEGER
+    )
+    """)
 
-def add_coins(uid, amount):
-    query("UPDATE users SET coins=coins+? WHERE id=?", (int(amount), int(uid)))
+    execute("""
+    CREATE TABLE IF NOT EXISTS market(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seller INTEGER,
+        nft_id INTEGER,
+        price INTEGER
+    )
+    """)
 
-def take_coins(uid, amount):
-    u = get_user(uid)
-    if u["coins"] < amount:
-        return False
-    query("UPDATE users SET coins=coins-? WHERE id=?", (amount, int(uid)))
-    return True
+    execute("""
+    CREATE TABLE IF NOT EXISTS stats(
+        user_id INTEGER PRIMARY KEY,
+        games INTEGER DEFAULT 0,
+        wins INTEGER DEFAULT 0,
+        jackpots INTEGER DEFAULT 0
+    )
+    """)
 
-def stats(uid, win):
-    query("""
-    UPDATE stats SET games=games+1,
-    wins=wins+?, losses=losses+?
+    execute("""
+    CREATE TABLE IF NOT EXISTS achievements(
+        user_id INTEGER,
+        name TEXT,
+        UNIQUE(user_id,name)
+    )
+    """)
+
+    execute("""
+    CREATE TABLE IF NOT EXISTS bans(
+        user_id INTEGER PRIMARY KEY,
+        reason TEXT DEFAULT ''
+    )
+    """)
+
+init_db()
+
+# ================= LANGUAGES =================
+
+LANGUAGES = {
+    "ru": {
+        "welcome": "🎮 Добро пожаловать в MEGA BOT!",
+        "games": "🎮 Игры",
+        "profile": "👤 Профиль",
+        "market": "💎 NFT Маркет",
+        "settings": "⚙️ Настройки",
+        "balance": "💰 Баланс",
+        "bonus": "🎁 Ежедневный бонус",
+        "back": "⬅️ Назад",
+        "choose": "Выбери режим:"
+    },
+    "uk": {
+        "welcome": "🎮 Ласкаво просимо!",
+        "games": "🎮 Ігри",
+        "profile": "👤 Профіль",
+        "market": "💎 NFT Маркет",
+        "settings": "⚙️ Налаштування",
+        "balance": "💰 Баланс",
+        "bonus": "🎁 Щоденний бонус",
+        "back": "⬅️ Назад",
+        "choose": "Обери режим:"
+    },
+    "en": {
+        "welcome": "🎮 Welcome!",
+        "games": "🎮 Games",
+        "profile": "👤 Profile",
+        "market": "💎 NFT Market",
+        "settings": "⚙️ Settings",
+        "balance": "💰 Balance",
+        "bonus": "🎁 Daily bonus",
+        "back": "⬅️ Back",
+        "choose": "Choose a mode:"
+    },
+    "kk": {
+        "welcome": "🎮 Қош келдің!",
+        "games": "🎮 Ойындар",
+        "profile": "👤 Профиль",
+        "market": "💎 NFT Маркет",
+        "settings": "⚙️ Баптаулар",
+        "balance": "💰 Баланс",
+        "bonus": "🎁 Күнделікті сыйлық",
+        "back": "⬅️ Артқа",
+        "choose": "Ойынды таңда:"
+    }
+}
+
+def get_user(uid):
+    return execute(
+        "SELECT * FROM users WHERE id=?",
+        (uid,)
+    ).fetchone()
+
+def register(message):
+    uid = message.from_user.id
+    username = message.from_user.username or "Без username"
+
+    execute("""
+    INSERT OR IGNORE INTO users(id,username)
+    VALUES(?,?)
+    """, (uid, username))
+
+    execute(
+        "UPDATE users SET username=? WHERE id=?",
+        (username, uid)
+    )
+
+    return get_user(uid)
+
+def lang(uid):
+    user = get_user(uid)
+    return user[5] if user else "ru"
+
+def tr(uid, key):
+    return LANGUAGES.get(
+        lang(uid), LANGUAGES["ru"]
+    ).get(key, key)
+
+def banned(uid):
+    user = get_user(uid)
+    return not user or bool(user[8])
+
+def add_balance(uid, amount):
+    execute("""
+    UPDATE users SET balance=balance+?
+    WHERE id=?
+    """, (amount, uid))
+
+def add_xp(uid, amount):
+    execute("""
+    UPDATE users SET xp=xp+?
+    WHERE id=?
+    """, (amount, uid))
+
+    user = get_user(uid)
+    xp = user[3]
+    level = xp // 500 + 1
+
+    execute(
+        "UPDATE users SET level=? WHERE id=?",
+        (level, uid)
+    )
+
+def update_stats(uid, win=False, jackpot=False):
+    execute("""
+    INSERT OR IGNORE INTO stats(user_id)
+    VALUES(?)
+    """, (uid,))
+
+    execute("""
+    UPDATE stats
+    SET games=games+1,
+        wins=wins+?,
+        jackpots=jackpots+?
     WHERE user_id=?
-    """, (int(win), int(not win), int(uid)))
+    """, (int(win), int(jackpot), uid))
 
-# ==================================================
-# NFT CATALOG — 300+ COMBINATIONS
-# ==================================================
+# ================= KEYBOARDS =================
+
+def main_menu(uid):
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True
+    )
+
+    kb.row("🎮 Игры", "👤 Профиль")
+    kb.row("💎 NFT Маркет", "🎁 Бонус")
+    kb.row("⚙️ Настройки", "🏆 Достижения")
+    kb.row("📊 Топ игроков", "❓ Помощь")
+
+    return kb
+
+def game_menu():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    buttons = [
+        ("🎰 Слоты", "slots"),
+        ("🎲 Кубики", "dice"),
+        ("🪙 Монетка", "coin"),
+        ("🎯 Дартс", "dart"),
+        ("🃏 Карты", "cards"),
+        ("💣 Сапёр", "mines"),
+        ("🧠 Викторина", "quiz"),
+        ("🐉 Босс", "boss"),
+        ("🎁 Кейсы", "cases")
+    ]
+
+    for title, callback in buttons:
+        kb.add(
+            types.InlineKeyboardButton(
+                title,
+                callback_data="game_" + callback
+            )
+        )
+
+    return kb
+
+# ================= NFT GENERATOR =================
 
 PREFIXES = [
-    "Космический", "Золотой", "Тёмный", "Неоновый",
-    "Ледяной", "Огненный", "Королевский", "Древний",
-    "Мистический", "Кибер", "Легендарный", "Секретный",
-    "Радужный", "Призрачный", "Эпический", "Драконий",
-    "Кристальный", "Галактический", "Пиксельный", "Магический"
+    "Golden", "Dark", "Cyber", "Mystic",
+    "Royal", "Crystal", "Neon", "Shadow",
+    "Ancient", "Legendary", "Frozen",
+    "Electric", "Cosmic", "Lunar",
+    "Solar", "Diamond", "Phantom"
 ]
 
 OBJECTS = [
-    ("Кот", "🐱"), ("Пёс", "🐶"), ("Дракон", "🐉"),
-    ("Алмаз", "💎"), ("Корона", "👑"), ("Ракета", "🚀"),
-    ("Призрак", "👻"), ("Робот", "🤖"), ("Планета", "🪐"),
-    ("Меч", "⚔️"), ("Щит", "🛡️"), ("Звезда", "⭐"),
-    ("Кристалл", "🔮"), ("Пицца", "🍕"), ("Коробка", "🎁"),
-    ("Череп", "💀"), ("Лиса", "🦊"), ("Единорог", "🦄"),
-    ("Тигр", "🐯"), ("Пингвин", "🐧")
+    "Dragon", "Tiger", "Crown", "Sword",
+    "Cat", "Robot", "Ghost", "Phoenix",
+    "Skull", "Wolf", "Gem", "Star",
+    "Portal", "Mask", "Knight",
+    "Treasure", "Planet", "Cactus",
+    "Coconut", "Trophy"
 ]
 
 RARITIES = [
     ("Обычный", 50, 100),
-    ("Редкий", 100, 250),
-    ("Эпический", 250, 600),
-    ("Легендарный", 600, 1500),
-    ("Мифический", 1500, 5000)
+    ("Редкий", 20, 250),
+    ("Эпический", 10, 600),
+    ("Легендарный", 5, 1500),
+    ("Мифический", 1, 5000)
 ]
 
-def generate_nft():
-    prefix = random.choice(PREFIXES)
-    name, emoji = random.choice(OBJECTS)
-    rarity, low, high = random.choice(RARITIES)
-    return {
-        "name": f"{prefix} {name}",
-        "emoji": emoji,
-        "rarity": rarity,
-        "price": random.randint(low, high)
-    }
+def generate_nft(uid):
+    name = random.choice(PREFIXES) + " " + random.choice(OBJECTS)
+    rarity, minimum, maximum = random.choice(RARITIES)
+    price = random.randint(minimum, maximum)
 
-def create_nft(uid):
-    nft = generate_nft()
-    query("""
-    INSERT INTO inventory(owner,name,rarity,emoji,price)
-    VALUES(?,?,?,?,?)
-    """, (uid, nft["name"], nft["rarity"],
-          nft["emoji"], nft["price"]))
-    return nft
+    execute("""
+    INSERT INTO inventory(owner,name,rarity,price)
+    VALUES(?,?,?,?)
+    """, (uid, name, rarity, price))
 
-# ==================================================
-# TRANSLATIONS
-# ==================================================
+    return name, rarity, price
 
-LANGS = {
-    "ru": {
-        "welcome": "👋 Добро пожаловать в NFT GAME!",
-        "balance": "Баланс",
-        "games": "🎮 Игры",
-        "casino": "🎰 Игровой зал",
-        "profile": "👤 Профиль",
-        "settings": "⚙️ Настройки",
-        "market": "🛒 NFT Маркет",
-        "inventory": "💎 Инвентарь",
-        "channel": "📢 Канал",
-        "support": "❤️ Поддержать автора",
-        "back": "⬅️ Назад",
-        "choose": "Выбери действие:",
-        "bet": "Введи ставку от 1 до 10000:",
-        "no_money": "❌ Недостаточно монет!",
-        "win": "🎉 Победа!",
-        "lose": "😢 Проигрыш!",
-        "language": "Выбери язык:",
-        "admin": "👑 Админ-панель",
-        "id": "Твой ID",
-        "guess": "🔢 Угадай число",
-        "coin": "🪙 Монетка",
-        "dice": "🎲 Кубик",
-        "slots": "🎰 Слоты",
-        "roulette": "🔴 Рулетка",
-        "decor": "🎨 Украшение профиля",
-        "sell": "💰 Продать NFT",
-        "buy": "🛒 Купить NFT"
-    },
-    "uk": {
-        "welcome": "👋 Ласкаво просимо до NFT GAME!",
-        "balance": "Баланс",
-        "games": "🎮 Ігри",
-        "casino": "🎰 Ігрова зала",
-        "profile": "👤 Профіль",
-        "settings": "⚙️ Налаштування",
-        "market": "🛒 NFT Маркет",
-        "inventory": "💎 Інвентар",
-        "channel": "📢 Канал",
-        "support": "❤️ Підтримати автора",
-        "back": "⬅️ Назад",
-        "choose": "Обери дію:",
-        "bet": "Введи ставку від 1 до 10000:",
-        "no_money": "❌ Недостатньо монет!",
-        "win": "🎉 Перемога!",
-        "lose": "😢 Поразка!",
-        "language": "Обери мову:",
-        "admin": "👑 Адмін-панель",
-        "id": "Твій ID",
-        "guess": "🔢 Вгадай число",
-        "coin": "🪙 Монетка",
-        "dice": "🎲 Кубик",
-        "slots": "🎰 Слоти",
-        "roulette": "🔴 Рулетка",
-        "decor": "🎨 Прикраса профілю",
-        "sell": "💰 Продати NFT",
-        "buy": "🛒 Купити NFT"
-    },
-    "en": {
-        "welcome": "👋 Welcome to NFT GAME!",
-        "balance": "Balance",
-        "games": "🎮 Games",
-        "casino": "🎰 Game room",
-        "profile": "👤 Profile",
-        "settings": "⚙️ Settings",
-        "market": "🛒 NFT Market",
-        "inventory": "💎 Inventory",
-        "channel": "📢 Channel",
-        "support": "❤️ Support author",
-        "back": "⬅️ Back",
-        "choose": "Choose an action:",
-        "bet": "Enter a stake from 1 to 10000:",
-        "no_money": "❌ Not enough coins!",
-        "win": "🎉 You won!",
-        "lose": "😢 You lost!",
-        "language": "Choose language:",
-        "admin": "👑 Admin panel",
-        "id": "Your ID",
-        "guess": "🔢 Guess the number",
-        "coin": "🪙 Coin",
-        "dice": "🎲 Dice",
-        "slots": "🎰 Slots",
-        "roulette": "🔴 Roulette",
-        "decor": "🎨 Profile decoration",
-        "sell": "💰 Sell NFT",
-        "buy": "🛒 Buy NFT"
-    },
-    "kz": {
-        "welcome": "👋 NFT GAME-ге қош келдің!",
-        "balance": "Баланс",
-        "games": "🎮 Ойындар",
-        "casino": "🎰 Ойын бөлмесі",
-        "profile": "👤 Профиль",
-        "settings": "⚙️ Баптаулар",
-        "market": "🛒 NFT базары",
-        "inventory": "💎 Инвентарь",
-        "channel": "📢 Арна",
-        "support": "❤️ Авторды қолдау",
-        "back": "⬅️ Артқа",
-        "choose": "Әрекетті таңда:",
-        "bet": "1-ден 10000-ға дейінгі ставканы енгіз:",
-        "no_money": "❌ Монета жеткіліксіз!",
-        "win": "🎉 Жеңіс!",
-        "lose": "😢 Жеңіліс!",
-        "language": "Тілді таңда:",
-        "admin": "👑 Әкімші панелі",
-        "id": "Сенің ID",
-        "guess": "🔢 Сан тап",
-        "coin": "🪙 Тиын",
-        "dice": "🎲 Текше",
-        "slots": "🎰 Слоттар",
-        "roulette": "🔴 Рулетка",
-        "decor": "🎨 Профиль безендіру",
-        "sell": "💰 NFT сату",
-        "buy": "🛒 NFT сатып алу"
-    }
+# ================= ACHIEVEMENTS =================
+
+ACHIEVEMENTS = {
+    "first_game": "🎮 Первая игра",
+    "first_win": "🏆 Первая победа",
+    "jackpot": "🎰 Джекпот 777",
+    "collector": "💎 Первый NFT",
+    "rich": "💰 5000 монет",
+    "boss": "🐉 Победитель босса"
 }
 
-def T(uid, key):
-    lang = get_user(uid)["lang"]
-    return LANGS.get(lang, LANGS["ru"]).get(key, key)
+def achievement(uid, name):
+    if name not in ACHIEVEMENTS:
+        return False
 
-# ==================================================
-# TELEGRAM API
-# ==================================================
-
-def api(method, params=None):
-    data = urllib.parse.urlencode(params or {}).encode()
-    req = urllib.request.Request(API + method, data=data)
     try:
-        with urllib.request.urlopen(req, timeout=35) as r:
-            return json.loads(r.read().decode())
-    except Exception as e:
-        print("API ERROR:", e)
-        return {}
+        execute("""
+        INSERT INTO achievements(user_id,name)
+        VALUES(?,?)
+        """, (uid, name))
+        return True
+    except sqlite3.IntegrityError:
+        return False
 
-def send(cid, text, keyboard=None):
-    p = {"chat_id": cid, "text": text}
-    if keyboard:
-        p["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
-    return api("sendMessage", p)
+# ================= SLOTS =================
 
-def edit(cid, mid, text, keyboard=None):
-    p = {"chat_id": cid, "message_id": mid, "text": text}
-    if keyboard:
-        p["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
-    return api("editMessageText", p)
+SLOT_SYMBOLS = [
+    "🍒", "🍋", "🍇", "⭐", "💎", "7️⃣"
+]
 
-def answer(cid, text=""):
-    api("answerCallbackQuery", {
-        "callback_query_id": cid,
-        "text": text
-    })
-
-def buttons(rows):
-    return {"inline_keyboard": rows}
-
-# ==================================================
-# MENUS
-# ==================================================
-
-def home(uid):
-    return buttons([
-        [{"text": T(uid, "games"), "callback_data": "games"},
-         {"text": T(uid, "profile"), "callback_data": "profile"}],
-        [{"text": T(uid, "market"), "callback_data": "market"},
-         {"text": T(uid, "inventory"), "callback_data": "inventory"}],
-        [{"text": T(uid, "settings"), "callback_data": "settings"}],
-        [{"text": T(uid, "support"), "url": SUPPORT}],
-        [{"text": T(uid, "channel"), "url": CHANNEL}]
-    ])
-
-def games_menu(uid):
-    names = [
-        ("guess", "guess"),
-        ("coin", "coin"),
-        ("dice", "dice"),
-        ("slots", "slots"),
-        ("roulette", "roulette")
+def slot_spin():
+    result = [
+        random.choice(SLOT_SYMBOLS)
+        for _ in range(3)
     ]
-    rows = [[{"text": T(uid, label), "callback_data": "game_" + code}]
-            for label, code in names]
-    rows.append([{"text": T(uid, "back"), "callback_data": "home"}])
-    return buttons(rows)
 
-def settings_menu(uid):
-    rows = [
-        [{"text": "🌍 Язык / Language", "callback_data": "languages"}],
-        [{"text": T(uid, "decor"), "callback_data": "decor"}],
-        [{"text": "👑 Админка", "callback_data": "admin_login"}],
-        [{"text": T(uid, "back"), "callback_data": "home"}]
-    ]
-    return buttons(rows)
+    if result == ["7️⃣"] * 3:
+        return result, 10, "🏆 ДЖЕКПОТ 777!"
 
-def language_menu():
-    return buttons([
-        [{"text": "🇺🇦 Українська", "callback_data": "lang_uk"}],
-        [{"text": "🇷🇺 Русский", "callback_data": "lang_ru"}],
-        [{"text": "🇬🇧 English", "callback_data": "lang_en"}],
-        [{"text": "🇰🇿 Қазақша", "callback_data": "lang_kz"}],
-        [{"text": "⬅️", "callback_data": "settings"}]
-    ])
+    if len(set(result)) == 1:
+        return result, 3, "🔥 ТРИ ОДИНАКОВЫХ!"
 
-def profile(uid):
-    u = get_user(uid)
-    s = query("SELECT * FROM stats WHERE user_id=?", (uid,)).fetchone()
-    nft_count = query(
-        "SELECT COUNT(*) n FROM inventory WHERE owner=?", (uid,)
-    ).fetchone()["n"]
-    badge = " ☑️" if u["is_admin"] else ""
-    return (
-        f"{u['decoration']} ПРОФИЛЬ{badge}\n\n"
-        f"👤 @{u['username']}\n"
-        f"🆔 ID: {uid}\n"
-        f"🪙 {T(uid,'balance')}: {u['coins']}\n"
-        f"💎 NFT: {nft_count}\n"
-        f"🏆 Побед: {s['wins']}\n"
-        f"😢 Поражений: {s['losses']}\n"
-        f"🎮 Игр: {s['games']}"
+    if len(set(result)) == 2:
+        return result, 1, "✨ ПАРА!"
+
+    return result, 0, "😅 Не повезло!"
+
+def play_slots(chat_id, uid):
+    bet = 20
+
+    user = get_user(uid)
+    if user[2] < bet:
+        bot.send_message(chat_id, "❌ Нужно 20 монет!")
+        return
+
+    add_balance(uid, -bet)
+
+    msg = bot.send_message(
+        chat_id,
+        "🎰 | ❔ | ❔ | ❔\nКрутим барабаны..."
     )
 
-# ==================================================
-# GAME SYSTEM
-# ==================================================
+    for frame in [
+        "🎰 | 🍒 | ❔ | ❔",
+        "🎰 | ⭐ | 🍋 | ❔",
+        "🎰 | 💎 | 🍒 | ⭐",
+        "🎰 | 🔄 | 🔄 | 🔄"
+    ]:
+        time.sleep(0.45)
+        try:
+            bot.edit_message_text(
+                frame,
+                chat_id,
+                msg.message_id
+            )
+        except Exception:
+            pass
 
-states = {}
+    result, multiplier, title = slot_spin()
+    reward = bet * multiplier
 
-GAME_NAMES = {
-    "guess": "Угадай число",
-    "coin": "Монетка",
-    "dice": "Кубик",
-    "slots": "Слоты",
-    "roulette": "Рулетка"
+    if reward:
+        add_balance(uid, reward)
+        add_xp(uid, 20)
+
+    update_stats(
+        uid,
+        reward > 0,
+        multiplier == 10
+    )
+
+    if multiplier == 10:
+        achievement(uid, "jackpot")
+
+    bot.edit_message_text(
+        f"🎰 {' | '.join(result)}\n\n"
+        f"{title}\n"
+        f"💰 Ставка: {bet}\n"
+        f"🎁 Приз: {reward}",
+        chat_id,
+        msg.message_id
+    )
+
+# ================= DICE =================
+
+def play_dice(chat_id, uid):
+    user = get_user(uid)
+    if user[2] < 10:
+        bot.send_message(chat_id, "❌ Нужно 10 монет!")
+        return
+
+    add_balance(uid, -10)
+
+    msg = bot.send_message(chat_id, "🎲 Бросаем кубик...")
+
+    time.sleep(1)
+
+    value = random.randint(1, 6)
+    reward = 30 if value >= 5 else 0
+
+    if reward:
+        add_balance(uid, reward)
+        add_xp(uid, 10)
+
+    update_stats(uid, reward > 0)
+
+    bot.edit_message_text(
+        f"🎲 Выпало: {value}\n"
+        f"🎁 Награда: {reward}",
+        chat_id,
+        msg.message_id
+    )
+
+# ================= COIN =================
+
+def play_coin(chat_id, uid):
+    user = get_user(uid)
+
+    if user[2] < 10:
+        bot.send_message(chat_id, "❌ Нужно 10 монет!")
+        return
+
+    add_balance(uid, -10)
+
+    result = random.choice(["Орёл 🦅", "Решка 🪙"])
+
+    bot.send_message(
+        chat_id,
+        "🪙 Монетка подбрасывается...\n\n" + result
+    )
+
+    reward = 20 if result.startswith("Орёл") else 0
+
+    if reward:
+        add_balance(uid, reward)
+
+    update_stats(uid, reward > 0)
+
+# ================= DART =================
+
+def play_dart(chat_id, uid):
+    user = get_user(uid)
+
+    if user[2] < 10:
+        bot.send_message(chat_id, "❌ Нужно 10 монет!")
+        return
+
+    add_balance(uid, -10)
+
+    msg = bot.send_dice(chat_id, emoji="🎯")
+    time.sleep(1)
+
+    points = msg.dice.value
+    reward = points * 10
+
+    add_balance(uid, reward)
+    add_xp(uid, 10)
+    update_stats(uid, reward > 0)
+
+    bot.send_message(
+        chat_id,
+        f"🎯 Очки: {points}\n💰 Получено: {reward}"
+    )
+
+# ================= HIGH LOW =================
+
+def play_cards(chat_id, uid):
+    cards = [
+        ("2", 2), ("3", 3), ("4", 4),
+        ("5", 5), ("6", 6), ("7", 7),
+        ("8", 8), ("9", 9), ("10", 10),
+        ("J", 11), ("Q", 12),
+        ("K", 13), ("A", 14)
+    ]
+
+    first, second = random.sample(cards, 2)
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton(
+            "⬆️ Выше",
+            callback_data=f"card_higher_{first[1]}_{second[1]}"
+        ),
+        types.InlineKeyboardButton(
+            "⬇️ Ниже",
+            callback_data=f"card_lower_{first[1]}_{second[1]}"
+        )
+    )
+
+    bot.send_message(
+        chat_id,
+        f"🃏 Первая карта: {first[0]}\n"
+        "Вторая карта будет выше или ниже?",
+        reply_markup=kb
+    )
+
+# ================= MINES =================
+
+def mines_game(chat_id, uid):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+
+    for i in range(9):
+        kb.insert(
+            types.InlineKeyboardButton(
+                "❔",
+                callback_data=f"mine_{i}"
+            )
+        )
+
+    bot.send_message(
+        chat_id,
+        "💣 Сапёр! Найди безопасную клетку.",
+        reply_markup=kb
+    )
+
+# ================= QUIZ =================
+
+def quiz_game(chat_id):
+    questions = [
+        ("Сколько будет 5×5?", ["20", "25", "30"], 1),
+        ("Столица Франции?", ["Париж", "Рим", "Берлин"], 0),
+        ("Сколько планет в Солнечной системе?", ["7", "8", "9"], 1),
+        ("Какой океан самый большой?", ["Тихий", "Атлантический", "Индийский"], 0),
+        ("Сколько минут в часе?", ["50", "60", "100"], 1)
+    ]
+
+    q = random.choice(questions)
+
+    kb = types.InlineKeyboardMarkup()
+
+    for i, answer in enumerate(q[1]):
+        kb.add(
+            types.InlineKeyboardButton(
+                answer,
+                callback_data=f"quiz_{i}_{q[2]}"
+            )
+        )
+
+    bot.send_message(
+        chat_id,
+        "🧠 " + q[0],
+        reply_markup=kb
+    )
+
+# ================= BOSS =================
+
+def boss_game(chat_id, uid):
+    result = random.randint(1, 100)
+
+    if result > 40:
+        reward = 100
+        add_balance(uid, reward)
+        add_xp(uid, 50)
+        achievement(uid, "boss")
+
+        bot.send_message(
+            chat_id,
+            "🐉 БОСС ПОБЕЖДЁН!\n"
+            f"🏆 Награда: {reward} монет!"
+        )
+    else:
+        bot.send_message(
+            chat_id,
+            "🐉 Босс оказался сильнее!\n"
+            "Попробуй ещё раз."
+        )
+
+    update_stats(uid, result > 40)
+
+# ================= CASES =================
+
+CASE_TYPES = {
+    "common": (100, 50, 180),
+    "rare": (250, 150, 500),
+    "epic": (500, 300, 1200),
+    "legendary": (1000, 500, 3000)
 }
 
-def game_start(uid, game, cid):
-    states[uid] = {"step": "bet", "game": game}
-    send(cid, T(uid, "bet"))
+def cases_menu(chat_id):
+    kb = types.InlineKeyboardMarkup()
 
-def play_game(uid, cid, bet):
-    state = states.get(uid)
-    if not state:
+    for name, cost in [
+        ("Обычный", "common"),
+        ("Редкий", "rare"),
+        ("Эпический", "epic"),
+        ("Легендарный", "legendary")
+    ]:
+        kb.add(
+            types.InlineKeyboardButton(
+                name,
+                callback_data="case_" + cost
+            )
+        )
+
+    bot.send_message(
+        chat_id,
+        "🎁 Выбери виртуальный кейс:",
+        reply_markup=kb
+    )
+
+def open_case(uid, chat_id, case):
+    if case not in CASE_TYPES:
         return
 
-    game = state["game"]
-    if bet < 1 or bet > 10000:
-        send(cid, "Ставка должна быть от 1 до 10000.")
+    cost, minimum, maximum = CASE_TYPES[case]
+    user = get_user(uid)
+
+    if user[2] < cost:
+        bot.send_message(chat_id, "❌ Не хватает монет!")
         return
 
-    if not take_coins(uid, bet):
-        send(cid, T(uid, "no_money"))
+    add_balance(uid, -cost)
+
+    reward = random.randint(minimum, maximum)
+    add_balance(uid, reward)
+
+    name, rarity, price = generate_nft(uid)
+    achievement(uid, "collector")
+
+    bot.send_message(
+        chat_id,
+        "🎁 КЕЙС ОТКРЫТ!\n\n"
+        f"💰 Монеты: +{reward}\n"
+        f"💎 NFT: {name}\n"
+        f"⭐ Редкость: {rarity}"
+    )
+
+# ================= DAILY =================
+
+def daily(uid, chat_id):
+    user = get_user(uid)
+    today = time.strftime("%Y-%m-%d")
+
+    if user[9] == today:
+        bot.send_message(chat_id, "⏳ Бонус уже получен!")
         return
 
-    # Guessing game: player must actually choose a number.
-    if game == "guess":
-        state.update({
-            "step": "guess",
-            "bet": bet,
-            "number": random.randint(1, 5)
-        })
-        send(cid, "🔢 Угадай число от 1 до 5:",
-             buttons([[{"text": str(n), "callback_data": f"guess_{n}"}
-                       for n in range(1, 6)],
-                      [{"text": "Отмена", "callback_data": "cancel"}]]))
-        return
+    reward = random.randint(100, 300)
 
-    win = False
-    reward = 0
-    result = ""
+    execute(
+        "UPDATE users SET balance=balance+?,daily=? WHERE id=?",
+        (reward, today, uid)
+    )
 
-    if game == "coin":
-        result = random.choice(["Орёл", "Решка"])
-        win = result == "Орёл"
-        reward = bet * 2 if win else 0
+    bot.send_message(
+        chat_id,
+        f"🎁 Ежедневная награда: +{reward} монет!"
+    )
 
-    elif game == "dice":
-        roll = random.randint(1, 6)
-        result = f"🎲 Выпало: {roll}"
-        win = roll >= 5
-        reward = bet * 2 if win else 0
+# ================= PROFILE =================
 
-    elif game == "slots":
-        symbols = ["🍒", "🍋", "🍇", "💎", "⭐"]
-        result = [random.choice(symbols) for _ in range(3)]
-        if len(set(result)) == 1:
-            win, reward = True, bet * 5
-        elif len(set(result)) == 2:
-            win, reward = True, bet * 2
-        result = " | ".join(result)
+def profile(uid, chat_id):
+    user = get_user(uid)
 
-    elif game == "roulette":
-        number = random.randint(0, 36)
-        result = f"🔴 Выпало число: {number}"
-        win = number % 2 == 0 and number != 0
-        reward = bet * 2 if win else 0
+    stats = execute(
+        "SELECT games,wins,jackpots FROM stats WHERE user_id=?",
+        (uid,)
+    ).fetchone()
 
-    if win:
-        add_coins(uid, reward)
-        stats(uid, True)
-        msg = f"{T(uid,'win')}\n{result}\n+{reward} 🪙"
-    else:
-        stats(uid, False)
-        msg = f"{T(uid,'lose')}\n{result}\n-{bet} 🪙"
+    games, wins, jackpots = stats or (0, 0, 0)
 
-    states.pop(uid, None)
-    send(cid, msg, games_menu(uid))
+    nft_count = execute(
+        "SELECT COUNT(*) FROM inventory WHERE owner=?",
+        (uid,)
+    ).fetchone()[0]
 
-def guess_answer(uid, cid, number):
-    state = states.get(uid)
-    if not state or state.get("step") != "guess":
-        return
+    bot.send_message(
+        chat_id,
+        f"👤 ПРОФИЛЬ\n\n"
+        f"🆔 ID: {uid}\n"
+        f"⭐ Уровень: {user[4]}\n"
+        f"✨ XP: {user[3]}\n"
+        f"💰 Баланс: {user[2]}\n"
+        f"💎 NFT: {nft_count}\n"
+        f"🎮 Игр: {games}\n"
+        f"🏆 Побед: {wins}\n"
+        f"🎰 Джекпотов: {jackpots}"
+    )
 
-    bet = state["bet"]
-    correct = state["number"]
-    if number == correct:
-        reward = bet * 5
-        add_coins(uid, reward)
-        stats(uid, True)
-        msg = f"🎉 Правильно! Загаданное число: {correct}\n+{reward} 🪙"
-    else:
-        stats(uid, False)
-        msg = f"😢 Не угадал! Было число {correct}.\n-{bet} 🪙"
+# ================= INVENTORY =================
 
-    states.pop(uid, None)
-    send(cid, msg, games_menu(uid))
-
-# ==================================================
-# NFT MARKET
-# ==================================================
-
-def inventory_menu(uid):
-    items = query(
-        "SELECT * FROM inventory WHERE owner=? ORDER BY id DESC LIMIT 10",
+def inventory(uid, chat_id):
+    items = execute(
+        "SELECT id,name,rarity,price FROM inventory WHERE owner=?",
         (uid,)
     ).fetchall()
 
-    rows = []
-    text = "💎 ТВОЙ ИНВЕНТАРЬ\n\n"
-
     if not items:
-        text += "Пока пусто. Купи NFT в магазине!"
-    else:
-        for n in items:
-            text += (
-                f"\n{n['emoji']} {n['name']}\n"
-                f"Редкость: {n['rarity']}\n"
-                f"Цена: {n['price']} 🪙\n"
-            )
-            rows.append([{
-                "text": f"💰 Продать #{n['id']}",
-                "callback_data": f"sell_{n['id']}"
-            }])
+        bot.send_message(chat_id, "💎 Коллекция пока пуста!")
+        return
 
-    rows.append([{"text": "⬅️ Назад", "callback_data": "home"}])
-    return text, buttons(rows)
+    text = "💎 ТВОИ NFT:\n\n"
 
-def market_menu(uid):
-    items = query("""
-    SELECT listings.id, listings.price, inventory.name,
-    inventory.emoji, inventory.rarity, inventory.id AS nft_id,
-    listings.seller
-    FROM listings JOIN inventory ON listings.nft_id=inventory.id
-    ORDER BY listings.id DESC LIMIT 15
+    for item in items:
+        text += (
+            f"#{item[0]} — {item[1]}\n"
+            f"⭐ {item[2]} | 💰 {item[3]}\n\n"
+        )
+
+    bot.send_message(chat_id, text)
+
+# ================= MARKET =================
+
+def market_menu(chat_id):
+    items = execute("""
+    SELECT market.id, inventory.name,
+           inventory.rarity, market.price
+    FROM market
+    JOIN inventory ON inventory.id=market.nft_id
+    LIMIT 15
     """).fetchall()
 
-    text = "🛒 NFT MARKET\n\n"
-    rows = []
-
     if not items:
-        text += "Пока никто ничего не продаёт."
-    else:
-        for n in items:
-            seller = get_user(n["seller"])
-            text += (
-                f"{n['emoji']} {n['name']}\n"
-                f"Редкость: {n['rarity']}\n"
-                f"Цена: {n['price']} 🪙\n"
-                f"Продавец: @{seller['username']}\n\n"
-            )
-            rows.append([{
-                "text": f"Купить #{n['id']} за {n['price']} 🪙",
-                "callback_data": f"buy_{n['id']}"
-            }])
-
-    rows.append([{"text": "⬅️ Назад", "callback_data": "home"}])
-    return text, buttons(rows)
-
-def sell_nft(uid, nft_id, cid):
-    nft = query(
-        "SELECT * FROM inventory WHERE id=? AND owner=?",
-        (nft_id, uid)
-    ).fetchone()
-
-    if not nft:
-        send(cid, "NFT не найден.")
+        bot.send_message(chat_id, "💎 Маркет пока пуст!")
         return
 
-    states[uid] = {"step": "sell_price", "nft_id": nft_id}
-    send(cid, f"Введи цену продажи NFT {nft['name']}:")
+    for item in items:
+        kb = types.InlineKeyboardMarkup()
+        kb.add(
+            types.InlineKeyboardButton(
+                "🛒 Купить",
+                callback_data=f"buy_{item[0]}"
+            )
+        )
 
-def buy_nft(uid, listing_id, cid):
-    item = query(
-        "SELECT * FROM listings WHERE id=?", (listing_id,)
-    ).fetchone()
+        bot.send_message(
+            chat_id,
+            f"💎 {item[1]}\n"
+            f"⭐ {item[2]}\n"
+            f"💰 Цена: {item[3]}",
+            reply_markup=kb
+        )
 
-    if not item:
-        send(cid, "Лот уже недоступен.")
+# ================= SETTINGS =================
+
+def settings(chat_id):
+    kb = types.InlineKeyboardMarkup()
+
+    for code, name in [
+        ("ru", "🇷🇺 Русский"),
+        ("uk", "🇺🇦 Українська"),
+        ("en", "🇬🇧 English"),
+        ("kk", "🇰🇿 Қазақша")
+    ]:
+        kb.add(
+            types.InlineKeyboardButton(
+                name,
+                callback_data="language_" + code
+            )
+        )
+
+    bot.send_message(
+        chat_id,
+        "⚙️ Выбери язык:",
+        reply_markup=kb
+    )
+
+# ================= LEADERBOARD =================
+
+def leaderboard(chat_id):
+    users = execute("""
+    SELECT id,username,balance,level
+    FROM users
+    WHERE banned=0
+    ORDER BY balance DESC
+    LIMIT 10
+    """).fetchall()
+
+    text = "🏆 ТОП ИГРОКОВ\n\n"
+
+    for i, user in enumerate(users, 1):
+        text += (
+            f"{i}. {user[1]} — "
+            f"💰 {user[2]} | ⭐ {user[3]}\n"
+        )
+
+    bot.send_message(chat_id, text)
+
+# ================= ADMIN =================
+
+def admin_menu(chat_id):
+    kb = types.InlineKeyboardMarkup()
+
+    kb.add(
+        types.InlineKeyboardButton(
+            "📊 Статистика",
+            callback_data="admin_stats"
+        )
+    )
+
+    bot.send_message(
+        chat_id,
+        "🛠️ ADMIN PANEL",
+        reply_markup=kb
+    )
+
+# ================= START =================
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    register(message)
+    uid = message.from_user.id
+
+    if banned(uid):
         return
 
-    if item["seller"] == uid:
-        send(cid, "Нельзя купить собственный NFT.")
+    bot.send_message(
+        message.chat.id,
+        tr(uid, "welcome"),
+        reply_markup=main_menu(uid)
+    )
+
+# ================= ADMIN LOGIN =================
+
+@bot.message_handler(commands=["admin"])
+def admin_login(message):
+    uid = message.from_user.id
+
+    if not get_user(uid):
+        register(message)
+
+    msg = bot.send_message(
+        message.chat.id,
+        "🔐 Введи секретный код:"
+    )
+
+    bot.register_next_step_handler(
+        msg,
+        check_admin_code
+    )
+
+def check_admin_code(message):
+    uid = message.from_user.id
+
+    if message.text != ADMIN_CODE:
+        bot.send_message(message.chat.id, "❌ Неверный код!")
         return
 
-    if coins(uid) < item["price"]:
-        send(cid, "Недостаточно монет.")
+    execute(
+        "UPDATE users SET admin=1 WHERE id=?",
+        (uid,)
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "🛠️ Доступ администратора открыт!"
+    )
+
+    admin_menu(message.chat.id)
+
+# ================= MESSAGE HANDLER =================
+
+@bot.message_handler(content_types=["text"])
+def messages(message):
+    uid = message.from_user.id
+    chat = message.chat.id
+    text = message.text
+
+    register(message)
+
+    if banned(uid):
         return
 
-    with lock:
-        db.execute("BEGIN IMMEDIATE")
-        try:
-            listing = db.execute(
-                "SELECT * FROM listings WHERE id=?", (listing_id,)
-            ).fetchone()
+    if text == "🎮 Игры":
+        bot.send_message(
+            chat,
+            tr(uid, "choose"),
+            reply_markup=game_menu()
+        )
 
-            if not listing:
-                db.rollback()
-                send(cid, "Лот уже купили.")
-                return
+    elif text == "👤 Профиль":
+        profile(uid, chat)
 
-            nft = db.execute(
-                "SELECT * FROM inventory WHERE id=? AND owner=?",
-                (listing["nft_id"], listing["seller"])
-            ).fetchone()
+    elif text == "💎 NFT Маркет":
+        market_menu(chat)
 
-            if not nft:
-                db.execute("DELETE FROM listings WHERE id=?", (listing_id,))
-                db.commit()
-                send(cid, "Лот больше недоступен.")
-                return
+    elif text == "🎁 Бонус":
+        daily(uid, chat)
 
-            buyer = db.execute(
-                "SELECT coins FROM users WHERE id=?", (uid,)
-            ).fetchone()
+    elif text == "⚙️ Настройки":
+        settings(chat)
 
-            if not buyer or buyer["coins"] < listing["price"]:
-                db.rollback()
-                send(cid, "Недостаточно монет.")
-                return
+    elif text == "🏆 Достижения 
 
-            db.execute(
-                "UPDATE users SET coins=coins-? WHERE id=?",
-                (listing["price"], uid)
-            )
-            db.execute(
-                "UPDATE users SET coins=coins+? WHERE id=?",
-                (listing["price"], listing["seller"])
-            )
-            db.execute(
-                "UPDATE inventory SET owner=? WHERE id=?",
-                (uid, listing["nft_id"])
-            )
-            db.execute("DELETE FROM listings WHERE id=?", (listing_id,))
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-
-    send(cid, f"🎉 Ты купил {nft['name']}!")
-
-# ==================================================
-# ADMIN PANEL
-# ==================================================
-
-def admin_menu():
-    return buttons([
-        [{"text": "➕ Начислить монеты", "callback_data": "admin_add"}],
-        [{"text": "🚫 Забанить ID", "callback_data": "admin_ban"}],
-        [{"text": "✅ Разбанить ID", "callback_data": "admin_unban"}],
-        [{"text": "👑 Выдать администратора", "callback_data": "admin_give"}],
-        [{"text": "📊 Статистика бота", "callback_data": "admin_stats"}],
-        [{"text": "🎁 Выдать NFT", "callback_data": "admin_nft"}],
-        [{"text": "⬅️ Назад", "callback_data": "settings"}]
-    ])
-
-def admin_action(uid, action, cid):
-    states[uid] = {"step": action}
-    prompts = {
-        "admin_add": "Введи ID пользователя и количество монет через пробел:",
-        "admin_ban": "Введи ID пользователя для бана:",
-        "admin_unban": "Введи ID пользователя для разбана:",
-        "admin_give": "Введи ID пользователя:",
-        "admin_nft": "Введи ID пользователя для выдачи NFT:"
-    }
-    send(cid, prompts[action])
-
-# ================
+    TELEGRAM_TOKEN=9133073082:AAEMW6Uv6S2wvcEII7xlXmUNp4KdHsRqpRE
+ADMIN_CODE=2849
+    
